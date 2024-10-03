@@ -1,20 +1,23 @@
 from flask import Flask, request, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
-from flask_jwt_extended import JWTManager,create_access_token, jwt_required, get_jwt_identity
 from flask_mysqldb import MySQL
-import os
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
 
 app = Flask(__name__)
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', '')
+
+# JWT Configuration
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your_jwt_secret_key')
 jwt = JWTManager(app)
 
-app.config['MYSQL_HOST'] = os.environ.get('MYSQL_HOST', 'localhost')
-app.config['MYSQL_USER'] = os.environ.get('MYSQL_USER', 'blog_user')
-app.config['MYSQL_PASSWORD'] = os.environ.get('MYSQL_PASSWORD', '')  # This line reads the password
-app.config['MYSQL_DB'] = os.environ.get('MYSQL_DB', 'todo_api')
+# Database configuration
+app.config['MYSQL_HOST'] = os.getenv('MYSQL_HOST')
+app.config['MYSQL_USER'] = os.getenv('MYSQL_USER')
+app.config['MYSQL_PASSWORD'] = os.getenv('MYSQL_PASSWORD')
+app.config['MYSQL_DB'] = os.getenv('MYSQL_DB')
 
 mysql = MySQL(app)
 
@@ -25,13 +28,15 @@ def register():
         return jsonify({"error": "Missing required fields"}), 400
     
     cur = mysql.connection.cursor()
-    cur.execute("SELECT * FROM todo_api WHERE email = %s", (data['email'],))
+    # Change this line:
+    cur.execute("SELECT * FROM users WHERE email = %s", (data['email'],))
     if cur.fetchone():
         cur.close()
         return jsonify({"error": "Email already exists"}), 400
     
-    cur.execute("INSERT INTO todo_api (name, email, password) VALUES (%s, %s, %s)",
-                (data['name'], data['email'], generate_password_hash(data['password'])))
+    hashed_password = generate_password_hash(data['password'])
+    cur.execute("INSERT INTO users (name, email, password) VALUES (%s, %s, %s)",
+                (data['name'], data['email'], hashed_password))
     mysql.connection.commit()
     user_id = cur.lastrowid
     cur.close()
@@ -42,14 +47,14 @@ def register():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
-    if not all([data['email'], data['password']]):
+    if not all([data.get('email'), data.get('password')]):
         return jsonify({"error": "Missing required fields"}), 400
     cur = mysql.connection.cursor()
-    cur.execute("SELECT * FROM todo_api WHERE email = %s", (data['email'],))
+    cur.execute("SELECT * FROM users WHERE email = %s", (data['email'],))
     user = cur.fetchone()
-    if not user or not check_password_hash(user['password'], data['password']):
+    if not user or not check_password_hash(user['password'], data['password']):  # Assuming password is the 4th column
         return jsonify({"error": "Invalid credentials"}), 401
-    access_token = create_access_token(identity=user['id'])
+    access_token = create_access_token(identity=user['id'])  # Assuming id is the 1st column
     cur.close()
     return jsonify(access_token=access_token), 200
 
@@ -60,28 +65,27 @@ def unauthorized_response():
 @app.route('/todos', methods=['POST'])
 @jwt_required()
 def create_todo():
-    # Get the new todo data from the request body
-    data = request.json
-    # Get the user id from the jwt token
-    user_id = get_jwt_identity()
-    
-    # Validate required fields
-    if not all([data.get('title'), data.get('description')]):
-        return jsonify({"error": "Missing required fields"}), 400
-    
-    # Insert the new todo into the database
-    cur = mysql.connection.cursor()
-    cur.execute("INSERT INTO todos (user_id, title, description) VALUES (%s, %s, %s)",
-                (user_id, data['title'], data['description']))
-    mysql.connection.commit()
-    new_todo_id = cur.lastrowid
-    cur.close()
-    
-    return jsonify({
-        "id": new_todo_id,
-        "title": data['title'],
-        "description": data['description']
-    }), 201
+    try:
+        data = request.json
+        user_id = get_jwt_identity()
+        
+        if not all([data.get('title'), data.get('description')]):
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        cur = mysql.connection.cursor()
+        cur.execute("INSERT INTO todos (user_id, title, description) VALUES (%s, %s, %s)",
+                    (user_id, data['title'], data['description']))
+        mysql.connection.commit()
+        new_todo_id = cur.lastrowid
+        cur.close()
+        
+        return jsonify({
+            "id": new_todo_id,
+            "title": data['title'],
+            "description": data['description']
+        }), 201
+    except Exception as e:
+        return jsonify({"error": "An internal error occurred"}), 500
 
 
 @app.route('/todos/<int:todo_id>', methods=['PUT'])
@@ -107,7 +111,7 @@ def update_todo(todo_id):
         "description": data['description']
     }), 200
 
-@app.route('todos/<int:todo_id>', methods=['DELETE'])
+@app.route('/todos/<int:todo_id>', methods=['DELETE'])
 @jwt_required()
 def delete_todo(todo_id):
     cur =mysql.connection.cursor()
